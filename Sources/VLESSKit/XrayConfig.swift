@@ -1,31 +1,15 @@
 import Foundation
 
-/// Builds a complete Xray-core JSON config: a TUN inbound (the utun fd NetworkExtension creates) and a
-/// VLESS / Shadowsocks / Hysteria2 outbound from a ``ShareLink``.
-///
-/// DNS queries arriving on the TUN are answered by Xray's DNS module, which resolves over DNS-over-HTTPS
-/// through the proxy, so nothing leaks to the local resolver.
-///
-/// With the default ``Options`` two rules keep connections from stalling:
-///  - IPv6 is refused at once instead of being sent to servers that usually have no IPv6, so apps fall
-///    back to IPv4 immediately rather than after a timeout, and IPv6 still can't leak.
-///  - On VLESS (TCP-based transports), QUIC (UDP 443) is refused so browsers and video apps fall back to
-///    TCP instead of tunnelling QUIC inside TCP, which stalls.
+/// Builds an Xray-core JSON config: TUN inbound → proxy outbound for a ``ShareLink``.
 public enum XrayConfig {
     public typealias JSON = [String: Any]
 
     public struct Options: Sendable {
-        /// MTU of the TUN interface. Use the same value in `NEPacketTunnelNetworkSettings`.
         public var mtu: Int
-        /// DNS-over-HTTPS servers Xray resolves with, through the proxy.
         public var dohServers: [String]
-        /// Refuse IPv6 immediately.
         public var blockIPv6: Bool
-        /// Refuse UDP 443 when the outbound is VLESS.
         public var blockQUICOverTCP: Bool
-        /// Send private / link-local ranges straight out instead of through the proxy.
         public var bypassPrivateRanges: Bool
-        /// Xray log level: debug, info, warning, error, none.
         public var logLevel: String
 
         public init(
@@ -47,8 +31,6 @@ public enum XrayConfig {
         public static let `default` = Options()
     }
 
-    /// Plain DNS addresses to give iOS as the tunnel's resolvers. Queries to them reach the TUN and are
-    /// answered by Xray, so their actual value only matters for apps that hard-code a resolver.
     public static let tunnelDNS = ["1.1.1.1", "8.8.8.8"]
 
     public static func build(_ link: ShareLink, options: Options = .default) -> JSON {
@@ -78,7 +60,6 @@ public enum XrayConfig {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// Only the outbound (tag `proxy`), for embedding in a config of your own.
     public static func proxyOutbound(_ link: ShareLink) -> JSON {
         var outbound: JSON
         switch link.proto {
@@ -90,9 +71,7 @@ public enum XrayConfig {
         return outbound
     }
 
-    /// Share-link `fragment=length,delay,packets` (e.g. `1-1,0-1,tlshello`) → finalmask TCP fragment.
-    /// Both spellings are written: `length`/`delay` (what most clients emit) and `lengths`/`delays`
-    /// (current Xray docs); Xray ignores the one it doesn't know.
+    /// `fragment=length,delay,packets` → finalmask TCP fragment, in both key spellings Xray accepts.
     public static func fragment(_ link: ShareLink) -> JSON? {
         guard let parts = link["fragment"]?.components(separatedBy: ",").map({ $0.trimmingCharacters(in: .whitespaces) }),
               parts.count == 3, !parts.contains(where: \.isEmpty) else { return nil }
@@ -133,8 +112,7 @@ public enum XrayConfig {
         ]
     }
 
-    /// Xray 26 runs Hysteria2 as protocol "hysteria" v2 over its own QUIC transport; salamander and port
-    /// hopping live in finalmask.
+    /// Xray 26 runs Hysteria2 as protocol "hysteria" v2; salamander and port hopping live in finalmask.
     private static func hysteria2(_ link: ShareLink) -> JSON {
         var finalmask: JSON = [:]
         if link["obfs"] == "salamander" {
@@ -224,10 +202,9 @@ public enum XrayConfig {
 
     private static let direct: JSON = ["tag": "direct", "protocol": "freedom"]
     private static let dnsOut: JSON = ["tag": "dns-out", "protocol": "dns"]
-    /// Closes the connection immediately, so the app retries another way at once.
     private static let block: JSON = ["tag": "block", "protocol": "blackhole"]
 
-    /// Spelled out instead of `geoip:private` so no geoip.dat has to be shipped.
+    /// Spelled out so no geoip.dat has to be shipped.
     private static let privateRanges = [
         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10", "fc00::/7", "fe80::/10",
     ]

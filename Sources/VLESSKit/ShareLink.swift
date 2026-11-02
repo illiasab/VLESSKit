@@ -1,9 +1,6 @@
 import Foundation
 
-/// A proxy share link, parsed from one of:
-///  - `vless://<uuid>@<host>:<port>?type=ws|xhttp|grpc|httpupgrade|tcp&security=none|tls|reality&sni=…&alpn=…&fp=…&fragment=…&extra=…#<remark>`
-///  - `ss://<base64(method:password)>@<host>:<port>#<remark>` (SIP002) or `ss://<base64(method:password@host:port)>#<remark>`
-///  - `hysteria2://<auth>@<host>:<port>/?sni=…&obfs=salamander&obfs-password=…&insecure=1&mport=…#<remark>` (also `hy2://`)
+/// A parsed `vless://`, `ss://` or `hysteria2://` (`hy2://`) share link.
 public struct ShareLink: Equatable, Hashable, Sendable {
     public enum Proto: String, Sendable { case vless = "Vless", shadowsocks = "Shadowsocks", hysteria2 = "Hysteria2" }
 
@@ -12,11 +9,8 @@ public struct ShareLink: Equatable, Hashable, Sendable {
     public let secret: String
     public let host: String
     public let port: Int
-    /// Query parameters, percent-decoded.
     public let params: [String: String]
-    /// The `#fragment`, percent-decoded.
     public let remark: String
-    /// Shadowsocks cipher, e.g. `chacha20-ietf-poly1305`. Empty for other protocols.
     public let method: String
 
     public init(proto: Proto, secret: String, host: String, port: Int, params: [String: String] = [:], remark: String = "", method: String = "") {
@@ -29,21 +23,16 @@ public struct ShareLink: Equatable, Hashable, Sendable {
         self.method = method
     }
 
-    /// Parses a share link; nil when the scheme is unsupported or the link is malformed.
     public init?(_ link: String) {
         guard let parsed = Self.parse(link) else { return nil }
         self = parsed
     }
 
-    /// VLESS transport, lowercased (`tcp` when absent).
     public var network: String { params["type"].map { $0.lowercased() }.flatMap { $0.isEmpty ? nil : $0 } ?? "tcp" }
-    /// VLESS security, lowercased (`none` when absent).
     public var security: String { params["security"].map { $0.lowercased() }.flatMap { $0.isEmpty ? nil : $0 } ?? "none" }
 
-    /// A query parameter, or nil when it's absent or empty.
     public subscript(key: String) -> String? { params[key].flatMap { $0.isEmpty ? nil : $0 } }
 
-    /// Short label for a server list, e.g. "WS · TLS", "SHADOWSOCKS", "HY2 · OBFS".
     public var transportLabel: String {
         switch proto {
         case .vless: return security == "none" ? network.uppercased() : "\(network.uppercased()) · \(security.uppercased())"
@@ -52,7 +41,6 @@ public struct ShareLink: Equatable, Hashable, Sendable {
         }
     }
 
-    /// Hysteria2 runs over QUIC only, so a TCP connect can't be used to measure it.
     public var isUDPOnly: Bool { proto == .hysteria2 }
 
     public static func parse(_ link: String) -> ShareLink? {
@@ -156,17 +144,15 @@ public struct ShareLink: Equatable, Hashable, Sendable {
         return text.unicodeScalars.allSatisfy { (0x20...0x7e).contains($0.value) } ? text : nil
     }
 
-    /// Percent-decoding that leaves `+` alone (a literal `+` is common in passwords and base64).
+    /// Leaves `+` alone: it is common in passwords and base64.
     private static func decode(_ value: String) -> String { value.removingPercentEncoding ?? value }
 }
 
 private extension StringProtocol {
-    /// Text before the first `separator`, or everything when it's absent.
     func before(_ separator: String) -> String {
         range(of: separator).map { String(self[..<$0.lowerBound]) } ?? String(self)
     }
 
-    /// Text after the first `separator`, or nil when it's absent.
     func after(_ separator: String) -> String? {
         range(of: separator).map { String(self[$0.upperBound...]) }
     }

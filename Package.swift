@@ -1,8 +1,7 @@
 // swift-tools-version:5.9
 import PackageDescription
 
-// Set VLESSKIT_LOCAL_CORE=1 to use Frameworks/Libv2ray.xcframework built by scripts/build-xray.sh
-// instead of the prebuilt one attached to the GitHub release.
+// VLESSKIT_LOCAL_CORE=1 uses the framework built by scripts/build-xray.sh.
 let localCore = Context.environment["VLESSKIT_LOCAL_CORE"] == "1"
 
 let core: Target = localCore
@@ -17,9 +16,7 @@ let package = Package(
     name: "VLESSKit",
     platforms: [.iOS(.v16), .macOS(.v13)],
     products: [
-        // Share-link parsing and Xray config generation. Pure Swift, no binary.
         .library(name: "VLESSKit", targets: ["VLESSKit"]),
-        // A ready NEPacketTunnelProvider running Xray-core in-process. iOS only.
         .library(name: "VLESSKitTunnel", targets: ["VLESSKitTunnel"]),
     ],
     targets: [

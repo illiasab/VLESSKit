@@ -3,7 +3,6 @@ import XCTest
 
 final class CoreTests: XCTestCase {
     #if os(iOS)
-    /// Proves the Xray core binary links and its Go runtime starts on iOS.
     func testCoreLoads() {
         XCTAssertTrue(XrayCore.version.contains("Xray"), XrayCore.version)
     }

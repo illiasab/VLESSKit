@@ -3,13 +3,7 @@ import Foundation
 import NetworkExtension
 import VLESSKit
 
-/// App-side control of your packet-tunnel extension: saves one VPN configuration (iOS asks the user once),
-/// then starts and stops the tunnel with a share link.
-///
-/// ```swift
-/// let vpn = VLESSTunnelManager(extensionBundleId: "com.example.app.tunnel", name: "My VPN")
-/// try await vpn.connect("vless://…")
-/// ```
+/// Installs the VPN configuration and starts or stops the tunnel from the app.
 @MainActor
 public final class VLESSTunnelManager: ObservableObject {
     public let extensionBundleId: String
@@ -30,21 +24,18 @@ public final class VLESSTunnelManager: ObservableObject {
         Task { await load() }
     }
 
-    /// Loads the configuration saved earlier, if any.
     public func load() async {
         let managers = (try? await NETunnelProviderManager.loadAllFromPreferences()) ?? []
         manager = managers.first { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == extensionBundleId }
         if let manager { status = manager.connection.status }
     }
 
-    /// Saves the configuration and starts the tunnel; restarts it if it's already running.
     public func connect(_ link: String) async throws {
         guard let parsed = ShareLink.parse(link) else { throw VLESSKitError.unsupportedLink }
         let manager = manager ?? NETunnelProviderManager()
         let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = extensionBundleId
         proto.serverAddress = parsed.host
-        // Kept so the system can restart the tunnel by itself (on demand, after a reboot).
         proto.providerConfiguration = [VLESSTunnelManager.linkKey: link]
         manager.protocolConfiguration = proto
         manager.localizedDescription = name
@@ -61,7 +52,6 @@ public final class VLESSTunnelManager: ObservableObject {
         try manager.connection.startVPNTunnel(options: [VLESSTunnelManager.linkKey: link as NSString])
     }
 
-    /// Stops the tunnel. `removeConfiguration` also deletes it from Settings → VPN (e.g. on sign-out).
     public func disconnect(removeConfiguration: Bool = false) async {
         guard let manager else { return }
         manager.connection.stopVPNTunnel()
@@ -73,7 +63,6 @@ public final class VLESSTunnelManager: ObservableObject {
         }
     }
 
-    /// Why the last connection attempt ended, as reported by the extension.
     public func lastError() async -> Error? {
         guard let connection = manager?.connection else { return nil }
         return await withCheckedContinuation { continuation in
@@ -81,7 +70,6 @@ public final class VLESSTunnelManager: ObservableObject {
         }
     }
 
-    /// Same key `XrayPacketTunnelProvider` reads.
     public nonisolated static let linkKey = "link"
 
     private func waitUntilDisconnected(_ connection: NEVPNConnection) async {
