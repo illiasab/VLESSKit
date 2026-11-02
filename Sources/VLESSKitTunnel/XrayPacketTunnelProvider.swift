@@ -1,28 +1,28 @@
 #if os(iOS) && canImport(Libv2ray)
-import Libv2ray
 import NetworkExtension
 import os
-@_exported import VLESSKit
 
 /// Runs Xray-core in-process on the utun fd. Use it as your extension's principal class:
 /// `final class PacketTunnelProvider: XrayPacketTunnelProvider {}`
 open class XrayPacketTunnelProvider: NEPacketTunnelProvider {
     public static let linkKey = "link"
+    /// App message asking for ``XrayTraffic`` as JSON; see `VLESSTunnelManager.traffic()`.
+    public static let trafficMessage = Data("traffic".utf8)
 
     public let log = Logger(subsystem: "VLESSKit", category: "tunnel")
-    private var core: Libv2rayCoreController?
+    private lazy var engine = XrayEngine { [weak self] code, message in self?.coreDidEmit(code: code, message: message) }
 
     open var configOptions: XrayConfig.Options { .default }
 
     /// Override to supply your own config; it must keep the `tun` inbound.
-    open func makeConfig(for link: ShareLink) throws -> String {
+    open func makeConfig(for link: ProxyLink) throws -> String {
         try XrayConfig.jsonString(link, options: configOptions)
     }
 
     override open func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         let saved = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration
         guard let raw = (options?[Self.linkKey] as? String) ?? (saved?[Self.linkKey] as? String),
-              let link = ShareLink.parse(raw) else {
+              let link = ProxyLink.parse(raw) else {
             completionHandler(VLESSKitError.unsupportedLink)
             return
         }
@@ -34,7 +34,8 @@ open class XrayPacketTunnelProvider: NEPacketTunnelProvider {
                 return
             }
             do {
-                try self.startCore(link)
+                guard let fd = self.tunnelFileDescriptor else { throw VLESSKitError.noTunnelDescriptor }
+                try self.engine.start(config: try self.makeConfig(for: link), tunFd: fd)
                 completionHandler(nil)
             } catch {
                 self.log.error("connect failed: \(error.localizedDescription, privacy: .public)")
@@ -44,8 +45,16 @@ open class XrayPacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override open func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
-        stopCore()
+        do { try engine.stop() } catch { log.warning("stop: \(error.localizedDescription, privacy: .public)") }
         completionHandler()
+    }
+
+    override open func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
+        guard messageData == Self.trafficMessage else {
+            completionHandler?(nil)
+            return
+        }
+        completionHandler?(try? JSONEncoder().encode(engine.refreshTraffic()))
     }
 
     open func coreDidEmit(code: Int, message: String) {
@@ -70,24 +79,6 @@ open class XrayPacketTunnelProvider: NEPacketTunnelProvider {
         return settings
     }
 
-    private func startCore(_ link: ShareLink) throws {
-        guard let fd = tunnelFileDescriptor else { throw VLESSKitError.noTunnelDescriptor }
-        let config = try makeConfig(for: link)
-        Libv2rayInitCoreEnv(FileManager.default.temporaryDirectory.path, "")
-
-        let controller = core ?? Libv2rayNewCoreController(CoreCallback(owner: self))
-        guard let controller else { throw VLESSKitError.coreFailed }
-        core = controller
-        if controller.isRunning { try controller.stopLoop() }
-        try controller.startLoop(config, tunFd: fd)
-        guard controller.isRunning else { throw VLESSKitError.coreFailed }
-    }
-
-    private func stopCore() {
-        guard let core, core.isRunning else { return }
-        do { try core.stopLoop() } catch { log.warning("stopLoop: \(error.localizedDescription, privacy: .public)") }
-    }
-
     /// NetworkExtension doesn't expose the utun fd, so find the socket whose name starts with "utun".
     private var tunnelFileDescriptor: Int32? {
         var name = [CChar](repeating: 0, count: Int(IFNAMSIZ))
@@ -100,36 +91,4 @@ open class XrayPacketTunnelProvider: NEPacketTunnelProvider {
         return nil
     }
 }
-
-public enum XrayCore {
-    public static var version: String { Libv2rayCheckVersionX() }
-}
-
-private final class CoreCallback: NSObject, Libv2rayCoreCallbackHandlerProtocol {
-    private weak var owner: XrayPacketTunnelProvider?
-
-    init(owner: XrayPacketTunnelProvider) { self.owner = owner }
-
-    func startup() -> Int { 0 }
-    func shutdown() -> Int { 0 }
-
-    func onEmitStatus(_ code: Int, p1 message: String?) -> Int {
-        owner?.coreDidEmit(code: code, message: message ?? "")
-        return 0
-    }
-}
 #endif
-
-import Foundation
-
-public enum VLESSKitError: LocalizedError {
-    case unsupportedLink, noTunnelDescriptor, coreFailed
-
-    public var errorDescription: String? {
-        switch self {
-        case .unsupportedLink: return "Unsupported server link"
-        case .noTunnelDescriptor: return "Couldn't open the tunnel"
-        case .coreFailed: return "Xray core failed to start"
-        }
-    }
-}

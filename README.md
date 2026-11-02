@@ -6,6 +6,10 @@ A Swift package for building VLESS, Shadowsocks and Hysteria2 VPN apps on iOS wi
 - **`VLESSKit`**: share-link parsing and Xray config generation. Pure Swift, iOS and macOS, no binary.
 - **`VLESSKitTunnel`**: a ready `NEPacketTunnelProvider` that runs Xray in-process on the utun file
   descriptor (no tun2socks), plus `VLESSTunnelManager` to install and start the VPN from your app.
+  Also a local-proxy mode for the simulator, latency checks and traffic counters.
+
+Tested against live VLESS servers (TLS over xhttp and WebSocket). A runnable SwiftUI demo is in
+[`Example/`](Example).
 
 ## Supported links
 
@@ -18,7 +22,7 @@ A Swift package for building VLESS, Shadowsocks and Hysteria2 VPN apps on iOS wi
 ## Install
 
 ```swift
-.package(url: "https://github.com/illiasab/VLESSKit.git", from: "0.1.0")
+.package(url: "https://github.com/illiasab/VLESSKit.git", from: "0.2.0")
 ```
 
 Add `VLESSKitTunnel` to your **packet-tunnel extension** target, and `VLESSKitTunnel` (or only
@@ -50,14 +54,40 @@ try await vpn.connect("vless://uuid@example.com:443?type=ws&security=tls&path=%2
 await vpn.disconnect()
 ```
 
+**Traffic and latency:**
+
+```swift
+let traffic = await vpn.traffic()                        // XrayTraffic(uplink:downlink:) in bytes
+let ms = try XrayCore.measureDelay(ProxyLink(link)!)     // blocking; call off the main thread
+```
+
+**In the simulator** packet tunnels can't run, so run the core in your app as a local proxy:
+
+```swift
+let proxy = XrayLocalProxy()                             // SOCKS 127.0.0.1:10808, HTTP :10809
+try await proxy.start(ProxyLink(link)!)
+let session = URLSession(configuration: proxy.sessionConfiguration)
+let (data, _) = try await session.data(from: URL(string: "https://ipinfo.io/json")!)
+```
+
 **Config only**, e.g. to run Xray yourself:
 
 ```swift
 import VLESSKit
 
-let link = ShareLink("hy2://auth@example.com:443?obfs=salamander&obfs-password=pw")!
+let link = ProxyLink("hy2://auth@example.com:443?obfs=salamander&obfs-password=pw")!
 let json = try XrayConfig.jsonString(link)
 ```
+
+`ProxyLink` was called `ShareLink` in 0.1.0; it was renamed because it clashed with SwiftUI's
+`ShareLink`. The old name still works but is deprecated.
+
+## Example app
+
+`Example/VLESSKitDemo.xcodeproj` is a one-screen SwiftUI app with a connect button, server list,
+latency, traffic and a log. Paste a `vless://`, `ss://` or `hy2://` link and tap connect. In the
+simulator it runs the local proxy and shows the server's exit IP; on a device it runs the real VPN
+(set your team and bundle IDs first).
 
 ## Defaults that keep connections from stalling
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// A parsed `vless://`, `ss://` or `hysteria2://` (`hy2://`) share link.
-public struct ShareLink: Equatable, Hashable, Sendable {
+public struct ProxyLink: Equatable, Hashable, Sendable {
     public enum Proto: String, Sendable { case vless = "Vless", shadowsocks = "Shadowsocks", hysteria2 = "Hysteria2" }
 
     public let proto: Proto
@@ -43,7 +43,7 @@ public struct ShareLink: Equatable, Hashable, Sendable {
 
     public var isUDPOnly: Bool { proto == .hysteria2 }
 
-    public static func parse(_ link: String) -> ShareLink? {
+    public static func parse(_ link: String) -> ProxyLink? {
         let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let schemeEnd = trimmed.range(of: "://") else { return nil }
         let scheme = trimmed[..<schemeEnd.lowerBound].lowercased()
@@ -60,12 +60,12 @@ public struct ShareLink: Equatable, Hashable, Sendable {
             guard let (user, endpoint) = splitUser(rest) else { return nil }
             let uuid = decode(user)
             guard !uuid.isEmpty, let (host, port) = hostPort(endpoint) else { return nil }
-            return ShareLink(proto: .vless, secret: uuid, host: host, port: port, params: params, remark: remark)
+            return ProxyLink(proto: .vless, secret: uuid, host: host, port: port, params: params, remark: remark)
         case "ss":
             return parseShadowsocks(rest, params: params, remark: remark)
         case "hysteria2", "hy2":
             guard let (user, endpoint) = splitUser(rest), let (host, port) = hostPort(endpoint) else { return nil }
-            return ShareLink(proto: .hysteria2, secret: decode(user), host: host, port: port, params: params, remark: remark)
+            return ProxyLink(proto: .hysteria2, secret: decode(user), host: host, port: port, params: params, remark: remark)
         default:
             return nil
         }
@@ -86,7 +86,7 @@ public struct ShareLink: Equatable, Hashable, Sendable {
         return (nil, remark.trimmingCharacters(in: .whitespaces))
     }
 
-    private static func parseShadowsocks(_ rest: String, params: [String: String], remark: String) -> ShareLink? {
+    private static func parseShadowsocks(_ rest: String, params: [String: String], remark: String) -> ProxyLink? {
         let userInfo: String
         let endpoint: String
         if let (encodedUser, ep) = splitUser(rest) {
@@ -104,7 +104,7 @@ public struct ShareLink: Equatable, Hashable, Sendable {
         let method = String(userInfo[..<colon])
         let password = String(userInfo[userInfo.index(after: colon)...])
         guard !method.isEmpty, !password.isEmpty, let (host, port) = hostPort(endpoint) else { return nil }
-        return ShareLink(proto: .shadowsocks, secret: password, host: host, port: port, params: params, remark: remark, method: method)
+        return ProxyLink(proto: .shadowsocks, secret: password, host: host, port: port, params: params, remark: remark, method: method)
     }
 
     private static func splitUser(_ rest: String) -> (String, String)? {
@@ -157,3 +157,6 @@ private extension StringProtocol {
         range(of: separator).map { String(self[$0.upperBound...]) }
     }
 }
+
+@available(*, deprecated, renamed: "ProxyLink", message: "Renamed so it doesn't clash with SwiftUI.ShareLink.")
+public typealias ShareLink = ProxyLink

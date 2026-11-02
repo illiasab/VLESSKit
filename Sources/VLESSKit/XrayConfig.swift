@@ -1,6 +1,6 @@
 import Foundation
 
-/// Builds an Xray-core JSON config: TUN inbound → proxy outbound for a ``ShareLink``.
+/// Builds an Xray-core JSON config: TUN inbound → proxy outbound for a ``ProxyLink``.
 public enum XrayConfig {
     public typealias JSON = [String: Any]
 
@@ -11,6 +11,8 @@ public enum XrayConfig {
         public var blockQUICOverTCP: Bool
         public var bypassPrivateRanges: Bool
         public var logLevel: String
+        /// Count proxy traffic, read back with ``XrayTraffic``.
+        public var trafficStats: Bool
 
         public init(
             mtu: Int = 1500,
@@ -18,7 +20,8 @@ public enum XrayConfig {
             blockIPv6: Bool = true,
             blockQUICOverTCP: Bool = true,
             bypassPrivateRanges: Bool = true,
-            logLevel: String = "warning"
+            logLevel: String = "warning",
+            trafficStats: Bool = true
         ) {
             self.mtu = mtu
             self.dohServers = dohServers
@@ -26,6 +29,7 @@ public enum XrayConfig {
             self.blockQUICOverTCP = blockQUICOverTCP
             self.bypassPrivateRanges = bypassPrivateRanges
             self.logLevel = logLevel
+            self.trafficStats = trafficStats
         }
 
         public static let `default` = Options()
@@ -33,8 +37,22 @@ public enum XrayConfig {
 
     public static let tunnelDNS = ["1.1.1.1", "8.8.8.8"]
 
-    public static func build(_ link: ShareLink, options: Options = .default) -> JSON {
-        var rules: [JSON] = [["inboundTag": ["tun"], "port": "53", "outboundTag": "dns-out"]]
+    public static func build(_ link: ProxyLink, options: Options = .default) -> JSON {
+        assemble(link, inbounds: [tunInbound(mtu: options.mtu)], fromTUN: true, options: options)
+    }
+
+    /// Local SOCKS5 and HTTP proxies on 127.0.0.1 instead of a TUN, for running without a VPN (e.g. the simulator).
+    public static func buildLocalProxy(_ link: ProxyLink, socksPort: Int, httpPort: Int, options: Options = .default) -> JSON {
+        let inbounds: [JSON] = [
+            ["tag": "socks", "protocol": "socks", "listen": "127.0.0.1", "port": socksPort,
+             "settings": ["udp": true], "sniffing": sniffing],
+            ["tag": "http", "protocol": "http", "listen": "127.0.0.1", "port": httpPort, "sniffing": sniffing],
+        ]
+        return assemble(link, inbounds: inbounds, fromTUN: false, options: options)
+    }
+
+    private static func assemble(_ link: ProxyLink, inbounds: [JSON], fromTUN: Bool, options: Options) -> JSON {
+        var rules: [JSON] = fromTUN ? [["inboundTag": ["tun"], "port": "53", "outboundTag": "dns-out"]] : []
         if options.bypassPrivateRanges {
             rules.append(["ip": privateRanges, "outboundTag": "direct"])
         }
@@ -46,21 +64,30 @@ public enum XrayConfig {
         }
         var dns: JSON = ["servers": options.dohServers]
         if options.blockIPv6 { dns["queryStrategy"] = "UseIPv4" }
-        return [
+        var config: JSON = [
             "log": ["loglevel": options.logLevel],
             "dns": dns,
-            "inbounds": [tunInbound(mtu: options.mtu)],
+            "inbounds": inbounds,
             "outbounds": [proxyOutbound(link), direct, dnsOut, block],
             "routing": ["domainStrategy": "AsIs", "rules": rules],
         ]
+        if options.trafficStats {
+            config["stats"] = JSON()
+            config["policy"] = ["system": ["statsOutboundUplink": true, "statsOutboundDownlink": true]]
+        }
+        return config
     }
 
-    public static func jsonString(_ link: ShareLink, options: Options = .default) throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: build(link, options: options), options: [.sortedKeys, .withoutEscapingSlashes])
+    public static func serialize(_ config: JSON) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
     }
 
-    public static func proxyOutbound(_ link: ShareLink) -> JSON {
+    public static func jsonString(_ link: ProxyLink, options: Options = .default) throws -> String {
+        try serialize(build(link, options: options))
+    }
+
+    public static func proxyOutbound(_ link: ProxyLink) -> JSON {
         var outbound: JSON
         switch link.proto {
         case .vless: outbound = vless(link)
@@ -72,7 +99,7 @@ public enum XrayConfig {
     }
 
     /// `fragment=length,delay,packets` → finalmask TCP fragment, in both key spellings Xray accepts.
-    public static func fragment(_ link: ShareLink) -> JSON? {
+    public static func fragment(_ link: ProxyLink) -> JSON? {
         guard let parts = link["fragment"]?.components(separatedBy: ",").map({ $0.trimmingCharacters(in: .whitespaces) }),
               parts.count == 3, !parts.contains(where: \.isEmpty) else { return nil }
         let (length, delay, packets) = (parts[0], parts[1], parts[2])
@@ -85,11 +112,13 @@ public enum XrayConfig {
             "tag": "tun",
             "protocol": "tun",
             "settings": ["name": "xray0", "MTU": mtu, "userLevel": 8],
-            "sniffing": ["enabled": true, "destOverride": ["http", "tls", "quic"]],
+            "sniffing": sniffing,
         ]
     }
 
-    private static func vless(_ link: ShareLink) -> JSON {
+    private static let sniffing: JSON = ["enabled": true, "destOverride": ["http", "tls", "quic"]]
+
+    private static func vless(_ link: ProxyLink) -> JSON {
         var user: JSON = ["id": link.secret, "encryption": link["encryption"] ?? "none", "level": 8]
         if let flow = link["flow"] { user["flow"] = flow }
         return [
@@ -100,7 +129,7 @@ public enum XrayConfig {
         ]
     }
 
-    private static func shadowsocks(_ link: ShareLink) -> JSON {
+    private static func shadowsocks(_ link: ProxyLink) -> JSON {
         var stream: JSON = ["network": "tcp"]
         if let mask = fragment(link) { stream["finalmask"] = mask }
         return [
@@ -113,7 +142,7 @@ public enum XrayConfig {
     }
 
     /// Xray 26 runs Hysteria2 as protocol "hysteria" v2; salamander and port hopping live in finalmask.
-    private static func hysteria2(_ link: ShareLink) -> JSON {
+    private static func hysteria2(_ link: ProxyLink) -> JSON {
         var finalmask: JSON = [:]
         if link["obfs"] == "salamander" {
             finalmask["udp"] = [["type": "salamander", "settings": ["password": link["obfs-password"] ?? ""]]]
@@ -139,7 +168,7 @@ public enum XrayConfig {
         ]
     }
 
-    private static func streamSettings(_ link: ShareLink) -> JSON {
+    private static func streamSettings(_ link: ProxyLink) -> JSON {
         var stream: JSON = ["network": link.network, "security": link.security]
         let hostHeader = link["host"]
         func pathSettings() -> JSON {

@@ -2,9 +2,9 @@ import Foundation
 import XCTest
 @testable import VLESSKit
 
-final class ShareLinkTests: XCTestCase {
+final class ProxyLinkTests: XCTestCase {
     func testVlessXhttpTLS() throws {
-        let link = try XCTUnwrap(ShareLink.parse(
+        let link = try XCTUnwrap(ProxyLink.parse(
             "vless://8f3c6c3e-1111-4222-8333-944455556666@example.com:443?type=xhttp&security=tls&sni=cdn.example.com&alpn=h2,http%2F1.1&fp=chrome&path=%2Fx&fragment=1-1,0-1,tlshello#%F0%9F%87%A9%F0%9F%87%AA%20Frankfurt"
         ))
         XCTAssertEqual(link.proto, .vless)
@@ -15,12 +15,12 @@ final class ShareLinkTests: XCTestCase {
         XCTAssertEqual(link.security, "tls")
         XCTAssertEqual(link["alpn"], "h2,http/1.1")
         XCTAssertEqual(link.transportLabel, "XHTTP · TLS")
-        XCTAssertEqual(ShareLink.splitFlag(link.remark).code, "DE")
-        XCTAssertEqual(ShareLink.splitFlag(link.remark).name, "Frankfurt")
+        XCTAssertEqual(ProxyLink.splitFlag(link.remark).code, "DE")
+        XCTAssertEqual(ProxyLink.splitFlag(link.remark).name, "Frankfurt")
     }
 
     func testVlessIPv6HostAndDefaults() throws {
-        let link = try XCTUnwrap(ShareLink("vless://id@[2001:db8::1]:8443"))
+        let link = try XCTUnwrap(ProxyLink("vless://id@[2001:db8::1]:8443"))
         XCTAssertEqual(link.host, "2001:db8::1")
         XCTAssertEqual(link.port, 8443)
         XCTAssertEqual(link.network, "tcp")
@@ -29,20 +29,20 @@ final class ShareLinkTests: XCTestCase {
 
     func testShadowsocksSIP002AndLegacy() throws {
         let userInfo = Data("chacha20-ietf-poly1305:pa+ss".utf8).base64EncodedString()
-        let sip002 = try XCTUnwrap(ShareLink.parse("ss://\(userInfo)@1.2.3.4:8388#SS"))
+        let sip002 = try XCTUnwrap(ProxyLink.parse("ss://\(userInfo)@1.2.3.4:8388#SS"))
         XCTAssertEqual(sip002.proto, .shadowsocks)
         XCTAssertEqual(sip002.method, "chacha20-ietf-poly1305")
         XCTAssertEqual(sip002.secret, "pa+ss")
 
         let whole = Data("aes-256-gcm:secret@5.6.7.8:443".utf8).base64EncodedString().replacingOccurrences(of: "=", with: "")
-        let legacy = try XCTUnwrap(ShareLink.parse("ss://\(whole)"))
+        let legacy = try XCTUnwrap(ProxyLink.parse("ss://\(whole)"))
         XCTAssertEqual(legacy.method, "aes-256-gcm")
         XCTAssertEqual(legacy.host, "5.6.7.8")
         XCTAssertEqual(legacy.port, 443)
     }
 
     func testHysteria2() throws {
-        let link = try XCTUnwrap(ShareLink.parse("hy2://auth@hy.example.com:443/?sni=hy.example.com&obfs=salamander&obfs-password=pw&mport=20000-30000#HY"))
+        let link = try XCTUnwrap(ProxyLink.parse("hy2://auth@hy.example.com:443/?sni=hy.example.com&obfs=salamander&obfs-password=pw&mport=20000-30000#HY"))
         XCTAssertEqual(link.proto, .hysteria2)
         XCTAssertEqual(link.secret, "auth")
         XCTAssertTrue(link.isUDPOnly)
@@ -50,17 +50,17 @@ final class ShareLinkTests: XCTestCase {
     }
 
     func testRejectsMalformed() {
-        XCTAssertNil(ShareLink.parse("vmess://abc"))
-        XCTAssertNil(ShareLink.parse("vless://@host:443"))
-        XCTAssertNil(ShareLink.parse("vless://id@host"))
-        XCTAssertNil(ShareLink.parse("vless://id@host:70000"))
-        XCTAssertNil(ShareLink.parse("not a link"))
+        XCTAssertNil(ProxyLink.parse("vmess://abc"))
+        XCTAssertNil(ProxyLink.parse("vless://@host:443"))
+        XCTAssertNil(ProxyLink.parse("vless://id@host"))
+        XCTAssertNil(ProxyLink.parse("vless://id@host:70000"))
+        XCTAssertNil(ProxyLink.parse("not a link"))
     }
 }
 
 final class XrayConfigTests: XCTestCase {
     private func object(_ link: String, _ options: XrayConfig.Options = .default) throws -> [String: Any] {
-        let json = try XrayConfig.jsonString(try XCTUnwrap(ShareLink.parse(link)), options: options)
+        let json = try XrayConfig.jsonString(try XCTUnwrap(ProxyLink.parse(link)), options: options)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
     }
 
@@ -113,5 +113,33 @@ final class XrayConfigTests: XCTestCase {
         let xhttp = try XCTUnwrap(stream["xhttpSettings"] as? [String: Any])
         XCTAssertEqual((xhttp["extra"] as? [String: Any])?["xPaddingBytes"] as? String, "100-1000")
         XCTAssertNotNil((stream["finalmask"] as? [String: Any])?["tcp"])
+    }
+
+    func testLocalProxyHasNoTunAndCountsTraffic() throws {
+        let link = try XCTUnwrap(ProxyLink.parse("vless://id@h.com:443?type=ws&security=tls"))
+        let config = XrayConfig.buildLocalProxy(link, socksPort: 1080, httpPort: 8080)
+        let inbounds = try XCTUnwrap(config["inbounds"] as? [[String: Any]])
+        XCTAssertEqual(inbounds.map { $0["protocol"] as? String }, ["socks", "http"])
+        XCTAssertTrue(inbounds.allSatisfy { $0["listen"] as? String == "127.0.0.1" })
+        XCTAssertFalse(rules(config).contains { $0["inboundTag"] != nil })
+        XCTAssertNotNil(config["stats"])
+        XCTAssertNoThrow(try XrayConfig.serialize(config))
+    }
+
+    func testTrafficStatsOff() throws {
+        let config = XrayConfig.build(try XCTUnwrap(ProxyLink.parse("vless://id@h.com:443")), options: .init(trafficStats: false))
+        XCTAssertNil(config["stats"])
+        XCTAssertNil(config["policy"])
+    }
+}
+
+final class XrayTrafficTests: XCTestCase {
+    func testAccumulatesProxyOnly() {
+        var traffic = XrayTraffic()
+        traffic.add(statsLine: "proxy,uplink,100;proxy,downlink,2000;direct,downlink,999;")
+        traffic.add(statsLine: "proxy,downlink,500;")
+        XCTAssertEqual(traffic, XrayTraffic(uplink: 100, downlink: 2500))
+        traffic.add(statsLine: "")
+        XCTAssertEqual(traffic.downlink, 2500)
     }
 }

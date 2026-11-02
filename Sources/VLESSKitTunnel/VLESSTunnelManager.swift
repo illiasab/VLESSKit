@@ -31,7 +31,7 @@ public final class VLESSTunnelManager: ObservableObject {
     }
 
     public func connect(_ link: String) async throws {
-        guard let parsed = ShareLink.parse(link) else { throw VLESSKitError.unsupportedLink }
+        guard let parsed = ProxyLink.parse(link) else { throw VLESSKitError.unsupportedLink }
         let manager = manager ?? NETunnelProviderManager()
         let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = extensionBundleId
@@ -70,7 +70,22 @@ public final class VLESSTunnelManager: ObservableObject {
         }
     }
 
+    /// Bytes through the proxy since the tunnel started; nil when it isn't running.
+    public func traffic() async -> XrayTraffic? {
+        guard let session = manager?.connection as? NETunnelProviderSession, session.status == .connected else { return nil }
+        return await withCheckedContinuation { continuation in
+            do {
+                try session.sendProviderMessage(Self.trafficMessage) { data in
+                    continuation.resume(returning: data.flatMap { try? JSONDecoder().decode(XrayTraffic.self, from: $0) })
+                }
+            } catch {
+                continuation.resume(returning: nil)
+            }
+        }
+    }
+
     public nonisolated static let linkKey = "link"
+    nonisolated static let trafficMessage = Data("traffic".utf8)
 
     private func waitUntilDisconnected(_ connection: NEVPNConnection) async {
         for _ in 0..<50 where connection.status != .disconnected && connection.status != .invalid {
